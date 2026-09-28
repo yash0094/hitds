@@ -1,0 +1,133 @@
+# HITDS configuration. Every script reads this file.
+# Tuned for a CPU-only laptop (i7-7600U, 16 GB RAM, no CUDA GPU).
+
+seed: 42
+
+paths:
+  raw: data/raw
+  processed: data/processed
+  models: models
+  reports: reports
+  db: data/hitds.sqlite
+
+datasets:
+  # Primary dataset (train + live demo)
+  cicids2017:
+    hf_repo: c01dsnap/CIC-IDS2017
+    revision: main         # pin a commit hash here once downloaded, for exact reproducibility
+    drop_features: []      # e.g. ["Destination Port"] to check the model is not just learning ports
+    files:
+      - Monday-WorkingHours.pcap_ISCX.csv
+      - Tuesday-WorkingHours.pcap_ISCX.csv
+      - Wednesday-workingHours.pcap_ISCX.csv
+      - Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv
+      - Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv
+      - Friday-WorkingHours-Morning.pcap_ISCX.csv
+      - Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv
+      - Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv
+    # Down-sampling so everything fits in RAM and trains in minutes on CPU.
+    # Rare classes are kept in full; big classes are capped.
+    max_per_class: 40000
+    max_benign: 150000
+  # Secondary dataset (per-dataset results + cross-dataset check)
+  unsw_nb15:
+    hf_repo: Mouwiya/UNSW-NB15
+    revision: main
+    files:
+      - UNSW_NB15_training-set.csv
+    max_per_class: 20000
+    max_benign: 60000
+  # Legacy baseline (binary only in this mirror)
+  nslkdd:
+    hf_repo: Mireu-Lab/NSL-KDD
+    revision: main
+    files: [train.csv, test.csv]
+    normal_value: 0        # VERIFY on first run: which numeric `class` value means normal (~53% of rows)
+
+split:            # proposal: 70 / 15 / 15 stratified
+  train: 0.70
+  val: 0.15
+  test: 0.15
+
+features:
+  top_k: 40       # keep top-k features (0 = keep all)
+  selection: rf   # rf = Random Forest importance (project report 6.1) | anova = ANOVA F-test (IS-IDS)
+
+smad:             # IS-IDS innate layer (Dutt et al., IEEE Access 2020)
+  top_k: 20       # features picked by ANOVA F (benign vs attack)
+  sigma: 3.0      # three-sigma rule on benign traffic
+  percentile: 99.5  # flag threshold = this percentile of benign validation scores
+
+augment:
+  method: smote   # none | smote | ctgan   (ctgan needs torch + the `ctgan` package)
+  target_min_per_class: 2000   # lift every minority class up to this many rows
+  ctgan_epochs: 150
+  ctgan_max_rows: 20000        # CTGAN is trained on minority classes only (CPU budget)
+
+models:
+  rf:  {n_estimators: 200, max_depth: null, n_jobs: -1, class_weight: balanced_subsample}
+  svm: {C: 10.0, gamma: scale, max_train_rows: 12000}    # RBF SVC is O(n^2): subsample
+  knn: {n_neighbors: 7, max_train_rows: 40000}
+  mlp: {hidden: [256, 128, 64], dropout: 0.2, epochs: 25, batch_size: 512, lr: 0.001}
+  weights: {rf: 0.4, svm: 0.15, knn: 0.15, mlp: 0.3}      # soft-voting weights
+  iforest: {n_estimators: 200, contamination: auto, max_train_rows: 100000}
+
+triage:
+  # Normalised Shannon entropy H(p)/log(K) in [0,1].
+  # Threshold = this percentile of validation-set entropy (proposal §24).
+  entropy_percentile: 90
+  confidence_floor: 0.85       # report §4.2: < 0.85 max-probability also goes to review
+  anomaly_percentile: 99.5     # Isolation Forest score above this -> review even if confident
+  # Classes that always escalate to a human before any action, however confident.
+  always_escalate: [Infiltration, Heartbleed, Bot, WebAttack]
+  severity:                    # 1 (low) .. 5 (critical), used for queue ordering
+    BENIGN: 0
+    PortScan: 2
+    DoS: 3
+    DDoS: 4
+    BruteForce: 3
+    WebAttack: 4
+    Bot: 4
+    Infiltration: 5
+    Heartbleed: 5
+    Exploits: 4
+    Fuzzers: 2
+    Reconnaissance: 2
+    Generic: 3
+    Backdoor: 5
+    Shellcode: 5
+    Worms: 5
+    Analysis: 2
+    ATTACK: 3
+
+feedback:
+  retrain_every: 50            # report §4.2: retrain after every 50 analyst labels
+  feedback_weight: 3.0         # analyst-labelled rows count more than benchmark rows
+  promote_if_macro_f1_drop_below: 0.005   # promotion gate: new model must not be worse than this
+  retrain_max_rows: 60000      # benchmark rows used per retrain (keeps a retrain to a few minutes on CPU)
+
+hmm:              # Layer 4 - Kim, Dan & Zhu, IEEE TIFS 2024
+  policy: max_kl          # max_kl | max_ratio | static   (alert prioritisation policy)
+  policy_weight: 3.0      # how strongly the policy re-orders the triage priority in the queue
+  analyst_error: 0.1      # omega: assumed investigation error probability of the analyst
+  gamma0: 5.0             # confidence-function parameter (> 1), linear gamma(omega)
+  log_threshold: 8.0      # log theta: detection threshold of the sequential ratio test
+  rho: [0.0, 0.5, 0.6, 0.8]   # share of a host's flows that are attacker traffic in each state
+  window: 400             # time steps kept per host
+  A:                      # attack-graph transition matrix: safe, intrusion, exploit, impact
+    - [0.995, 0.004, 0.0008, 0.0002]
+    - [0.0, 0.93, 0.06, 0.01]
+    - [0.0, 0.0, 0.92, 0.08]
+    - [0.0, 0.0, 0.0, 1.0]
+
+review:
+  second_review_below: 0.5          # analyst confidence below this -> alert needs a second reviewer
+  distinct_second_reviewer: true    # second review must be a different login
+
+collect:
+  min_feature_coverage: 0.8         # reject uploads that carry < 80% of the model's features
+  max_rows_per_upload: 5000
+
+stream:
+  rate_per_sec: 5              # live demo replay speed
+  n_hosts: 12                  # simulated hosts used by the HMM attack-progression layer

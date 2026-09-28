@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+/data/raw/*
+!/data/raw/.gitkeep
+/data/processed/*
+!/data/processed/.gitkeep
+/data/*.sqlite*
+/models/*
+!/models/.gitkeep
+/reports/synthetic/
+# deploy/ IS committed for hosted deployment (use Git LFS for *.joblib and *.pkl - see docs/DEPLOY.md)

@@ -1,0 +1,13 @@
+# Local production-like run:  docker compose up --build   ->  http://localhost:7860
+services:
+  hitds:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      HITDS_DATASET: cicids2017
+      HITDS_USERS: "analyst:change-me,reviewer2:change-me-too"
+      HITDS_SECRET_KEY: "replace-with-a-long-random-string"
+      HITDS_API_KEY: "replace-with-a-collector-key"
+      HITDS_RATE: "5"
+    restart: unless-stopped

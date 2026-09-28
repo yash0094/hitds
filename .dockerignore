@@ -1,0 +1,12 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+data/
+models/
+reports/
+docs/
+tests/
+scripts/
+deploy/hf_space/
+*.zip

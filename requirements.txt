@@ -1,0 +1,18 @@
+# Python 3.11 or 3.12. CPU-only PyTorch (the laptop has no CUDA GPU):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+scipy>=1.11
+joblib>=1.3
+pyyaml>=6.0
+huggingface_hub>=0.23
+flask>=3.0
+waitress>=3.0        # production WSGI server (serve.py)
+requests>=2.31
+matplotlib>=3.8
+shap>=0.45          # SHAP attributions in the dashboard (falls back gracefully if missing)
+ctgan>=0.10         # CTGAN augmentation (needs torch)
+pytest>=8.0
+# optional, live capture in your own lab only:  pip install cicflowmeter   (+ Npcap on Windows)

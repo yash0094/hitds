@@ -1,0 +1,19 @@
+# Render Blueprint (Docker). Needs the exported deploy/ folder committed to the repo (git LFS for *.joblib, *.pkl).
+# The model does not fit the free 512 MB instance with PyTorch; use plan: standard (2 GB), or build the lite image.
+services:
+  - type: web
+    name: hitds
+    runtime: docker
+    plan: standard
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: "7860"
+      - key: HITDS_DATASET
+        value: cicids2017
+      - key: HITDS_USERS
+        sync: false
+      - key: HITDS_SECRET_KEY
+        generateValue: true
+      - key: HITDS_API_KEY
+        generateValue: true
