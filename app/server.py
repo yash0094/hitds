@@ -80,6 +80,15 @@ def create_app(dataset: str | None = None, reset: bool | None = None, rate: floa
     autostart = autostart if autostart is not None else env("HITDS_AUTOSTART") == "1"
     base = load_config(config_path or env("HITDS_CONFIG"))
     seed_everything(base["seed"])
+    models_root = Path(base["paths"]["models"])
+    if not (models_root / dataset / "registry.json").exists():
+        available = sorted(p.parent.name for p in models_root.glob("*/registry.json"))
+        if not available:
+            raise FileNotFoundError(f"no trained model in {models_root} - run scripts/03_train.py "
+                                    "(and scripts/06_export_deploy.py for Docker/Render)")
+        log.warning("no model for dataset %r; using %r instead (set HITDS_DATASET to silence this)",
+                    dataset, available[0])
+        dataset = available[0]
     cfg = use_dataset(base, dataset)
     if reset:
         for suffix in ("", "-wal", "-shm"):
