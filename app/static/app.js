@@ -197,7 +197,34 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter") submit();
 });
 
+
+// ------------------------------------------------------------------ host sensor
+async function loadHost() {
+  const [st, inc] = await Promise.all([api("/api/host/status"), api("/api/host/incidents")]);
+  const h = st.hosts[0];
+  $("#host-line").textContent = h ? `${h.host} · CPU ${h.cpu.toFixed(0)}% · mem ${h.mem.toFixed(0)}% · ${h.conns} sockets · ${h.age_s < 30 ? "live" : "last seen " + Math.round(h.age_s) + "s ago"}` : "no sensor connected";
+  const sevClass = { CRITICAL: "bad", HIGH: "bad", MEDIUM: "warn", LOW: "ok" };
+  if (!inc.incidents.length) { $("#host-inc").innerHTML = h ? '<p class="empty">No incidents. This host looks clean.</p>' : $("#host-inc").innerHTML; return; }
+  const open = new Set([...document.querySelectorAll("#host-inc details[open]")].map((d) => d.dataset.id));
+  $("#host-inc").innerHTML = inc.incidents.map((i) => {
+    const p = i.plain;
+    const act = i.status === "open"
+      ? `<button class="btn small" onclick="hostTriage(${i.id},'CONFIRMED')">Confirm threat</button> <button class="btn ghost small" onclick="hostTriage(${i.id},'FALSE_POSITIVE')">False alarm</button>`
+      : `<span class="pill ${i.status === "CONFIRMED" ? "bad" : "ok"}">${esc(i.status)}</span> <span class="muted small">${esc(i.decided_by)}</span>`;
+    return `<details data-id="${i.id}" ${open.has(String(i.id)) ? "open" : ""} class="feedrow" style="display:block">
+      <summary><span class="pill ${sevClass[i.severity] || "warn"}">${esc(i.severity)}</span> <b>${esc(p.title)}</b> <span class="muted small">×${i.count} · ${esc(i.host)}</span></summary>
+      <p class="small">${esc(i.details)}</p><p class="small"><b>What:</b> ${esc(p.what)}<br><b>Risk:</b> ${esc(p.risk)}</p>
+      <ol class="small">${p.do.map((d) => `<li>${esc(d)}</li>`).join("")}</ol>
+      <p class="muted small">${esc(p.caveat)}</p><p>${act}</p></details>`;
+  }).join("");
+}
+async function hostTriage(id, decision) {
+  try { await post(`/api/host/incident/${id}/triage`, { decision }); toast("Decision recorded in the audit log"); loadHost(); loadAudit(); }
+  catch (e) { toast(e.message); }
+}
+
 function refresh() { loadQueue().catch(() => {}); loadMetrics().catch(() => {}); loadFeed().catch(() => {}); }
-refresh(); loadAudit().catch(() => {});
+refresh(); loadAudit().catch(() => {}); loadHost().catch(() => {});
 setInterval(refresh, 1500);
 setInterval(() => loadAudit().catch(() => {}), 4000);
+setInterval(() => loadHost().catch(() => {}), 3000);

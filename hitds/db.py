@@ -52,6 +52,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL, event TEXT, alert_id INTEGER, actor TEXT, payload TEXT, prev_hash TEXT, hash TEXT
 );
+CREATE TABLE IF NOT EXISTS host_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL, host TEXT, os TEXT, cpu REAL, mem REAL, conns INTEGER, listeners INTEGER, procs INTEGER
+);
+CREATE TABLE IF NOT EXISTS host_incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    first_ts REAL, last_ts REAL, count INTEGER, host TEXT, type TEXT, severity TEXT, key TEXT, details TEXT,
+    status TEXT DEFAULT 'open', decided_by TEXT, decided_ts REAL, note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_hinc_key ON host_incidents (host, type, key, last_ts);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log
 BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log
@@ -278,3 +288,70 @@ class Store:
 
     def export_audit(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM audit_log ORDER BY seq")]
+
+    # ------------------------------------------------------------------ host sensor (hitds.hostrules)
+    HOST_DECISIONS = ("CONFIRMED", "FALSE_POSITIVE")
+    HOST_SNAPSHOTS_KEPT = 500
+
+    def add_host_snapshot(self, snap: dict, alerts: list[dict], dedup_seconds: float = 3600.0) -> dict:
+        """Store one sensor snapshot and fold its alerts into incidents. The same (host, type, key) seen again
+        within `dedup_seconds` raises that incident's counter instead of creating a duplicate every 5 s."""
+        now, new, bumped = time.time(), 0, 0
+        with self.tx() as c:
+            c.execute("INSERT INTO host_snapshots (ts,host,os,cpu,mem,conns,listeners,procs) VALUES (?,?,?,?,?,?,?,?)",
+                      (now, snap["host"], snap["os"], snap["cpu_percent"], snap["memory_percent"],
+                       snap["total_connections"], len(snap.get("listening", [])), len(snap.get("processes", []))))
+            c.execute("DELETE FROM host_snapshots WHERE id <= (SELECT MAX(id) FROM host_snapshots) - ?",
+                      (self.HOST_SNAPSHOTS_KEPT,))
+            for a in alerts:
+                row = c.execute("SELECT id FROM host_incidents WHERE host=? AND type=? AND key=? AND last_ts>=? "
+                                "ORDER BY id DESC LIMIT 1", (snap["host"], a["type"], a["key"], now - dedup_seconds)).fetchone()
+                if row:
+                    c.execute("UPDATE host_incidents SET count=count+1, last_ts=? WHERE id=?", (now, row["id"]))
+                    bumped += 1
+                else:
+                    cur = c.execute("INSERT INTO host_incidents (first_ts,last_ts,count,host,type,severity,key,details) "
+                                    "VALUES (?,?,?,?,?,?,?,?)",
+                                    (now, now, 1, snap["host"], a["type"], a["severity"], a["key"], a["details"]))
+                    self._audit(c, "host_incident", None, f"sensor:{snap['host']}",
+                                {"incident": cur.lastrowid, "type": a["type"], "severity": a["severity"], "key": a["key"]})
+                    new += 1
+        return {"new": new, "repeated": bumped}
+
+    def host_incident(self, iid: int):
+        r = self.conn.execute("SELECT * FROM host_incidents WHERE id=?", (iid,)).fetchone()
+        return dict(r) if r else None
+
+    def host_incidents(self, limit: int = 50) -> list[dict]:
+        order = "CASE status WHEN 'open' THEN 0 ELSE 1 END, " \
+                "CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END, last_ts DESC"
+        return [dict(r) for r in self.conn.execute(f"SELECT * FROM host_incidents ORDER BY {order} LIMIT ?", (limit,))]
+
+    def host_status(self) -> list[dict]:
+        """Latest snapshot of every host that has reported, with its age and open-incident count."""
+        rows = self.conn.execute("SELECT s.* FROM host_snapshots s JOIN (SELECT host, MAX(id) m FROM host_snapshots "
+                                 "GROUP BY host) x ON s.id = x.m ORDER BY s.ts DESC").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["age_s"] = round(time.time() - d["ts"], 1)
+            d["open_incidents"] = self.conn.execute("SELECT COUNT(*) FROM host_incidents WHERE host=? AND status='open'",
+                                                    (d["host"],)).fetchone()[0]
+            out.append(d)
+        return out
+
+    def host_triage(self, iid: int, decision: str, analyst: str, note: str = "") -> dict:
+        if decision not in self.HOST_DECISIONS:
+            raise ValueError(f"decision must be one of {self.HOST_DECISIONS}")
+        with self.tx() as c:
+            r = c.execute("SELECT * FROM host_incidents WHERE id=?", (iid,)).fetchone()
+            if not r:
+                raise KeyError(iid)
+            if r["status"] != "open":
+                raise ValueError(f"incident already decided: {r['status']}")
+            now = time.time()
+            c.execute("UPDATE host_incidents SET status=?, decided_by=?, decided_ts=?, note=? WHERE id=?",
+                      (decision, analyst, now, note[:300], iid))
+            self._audit(c, "host_triage", None, analyst, {"incident": iid, "decision": decision, "type": r["type"],
+                                                         "host": r["host"], "note": note[:300]})
+        return {"incident": iid, "status": decision}

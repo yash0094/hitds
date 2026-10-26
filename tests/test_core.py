@@ -277,3 +277,116 @@ def test_app_upload_and_api_ingest(client):
     assert client.post("/api/ingest", json={"flows": []}).status_code == 401
     ok = client.post("/api/ingest", json={"flows": df.head(3).to_dict("records")}, headers={"X-API-Key": "k"})
     assert ok.status_code == 200 and ok.json["ingested"] == 3
+
+
+def test_demo_login_is_disabled_on_a_public_host(monkeypatch):
+    from app.server import _users_from_env
+    for k in ("HITDS_USERS", "RENDER", "SPACE_ID", "HITDS_PRODUCTION"):
+        monkeypatch.delenv(k, raising=False)
+    assert "analyst" in _users_from_env()          # local development keeps the demo login
+    monkeypatch.setenv("RENDER", "true")           # Render sets RENDER=true
+    assert _users_from_env() == {}                 # no demo login on a public URL
+    monkeypatch.setenv("HITDS_USERS", "me:a-real-password")
+    assert list(_users_from_env()) == ["me"]       # real logins still work there
+
+
+# ---------------------------------------------------------------------- host sensor (hitds.hostrules + /api/host/*)
+def _snap(**kw):
+    base = {"host": "pc1", "os": "Windows", "cpu_percent": 5, "memory_percent": 40, "total_connections": 30,
+            "established": [], "syn_sent": [], "listening": [], "processes": []}
+    base.update(kw)
+    return base
+
+
+def test_host_rules_flag_each_threat_and_stay_quiet_on_a_clean_host():
+    from hitds import hostrules as hr
+    assert hr.evaluate(hr.clean_snapshot(_snap(established=[{"pid": 9, "proc": "chrome.exe", "laddr": "10.0.0.5", "lport": 5000,
+                                                              "raddr": "142.250.1.1", "rport": 443}],
+                                               processes=[{"pid": 1, "name": "explorer.exe"}]))) == []
+    a = hr.evaluate(hr.clean_snapshot(_snap(
+        established=[{"pid": 7, "proc": "evil.exe", "laddr": "10.0.0.5", "lport": 5000, "raddr": "203.0.113.9", "rport": 4444}],
+        listening=[{"pid": 8, "proc": "x.exe", "port": 31337}],
+        processes=[{"pid": 3, "name": "Ncat.EXE"}, {"pid": 4, "name": "ncat.exe"}],
+        total_connections=900, syn_sent=[{"raddr": f"10.0.0.{i}", "rport": 445} for i in range(25)])))
+    types = sorted(x["type"] for x in a)
+    assert types == ["OUTBOUND_SCAN", "RESTRICTED_TOOL", "SOCKET_FLOOD", "SUSPICIOUS_CONNECTION", "SUSPICIOUS_LISTENER"]
+    assert [x for x in a if x["type"] == "RESTRICTED_TOOL"][0]["severity"] == "HIGH"     # de-duplicated by name
+    assert len([x for x in a if x["type"] == "RESTRICTED_TOOL"]) == 1
+    # same machine on both ends is usually a test: severity is lowered and the text says so
+    loop = hr.evaluate(hr.clean_snapshot(_snap(established=[{"pid": 7, "proc": "ps", "laddr": "127.0.0.1", "lport": 5000,
+                                                              "raddr": "127.0.0.1", "rport": 4444}])))
+    assert loop[0]["severity"] == "MEDIUM" and "local test" in loop[0]["details"]
+    assert hr.evaluate(hr.clean_snapshot(_snap(established=[{"pid": 7, "proc": "adb", "laddr": "10.0.0.5", "lport": 5000,
+                                                              "raddr": "10.0.0.9", "rport": 5555}])))[0]["severity"] == "MEDIUM"
+
+
+def test_host_snapshot_is_validated_and_clamped():
+    from hitds import hostrules as hr
+    with pytest.raises(ValueError):
+        hr.clean_snapshot([1, 2])
+    with pytest.raises(ValueError):
+        hr.clean_snapshot({"host": "x"})
+    s = hr.clean_snapshot({"host": "h" * 500, "cpu_percent": 9e9, "total_connections": 5,
+                           "processes": [{"pid": "abc", "name": "n" * 500}] * 2000})
+    assert len(s["host"]) == 48 and s["cpu_percent"] == 100 and len(s["processes"]) == 800 and len(s["processes"][0]["name"]) == 64
+
+
+def test_host_incidents_are_deduplicated_and_triage_is_audited(tmp_path):
+    from hitds.db import Store
+    from hitds import hostrules as hr
+    st = Store(tmp_path / "h.db")
+    snap = hr.clean_snapshot(_snap(listening=[{"pid": 8, "proc": "x.exe", "port": 4444}]))
+    alerts = hr.evaluate(snap)
+    assert st.add_host_snapshot(snap, alerts) == {"new": 1, "repeated": 0}
+    assert st.add_host_snapshot(snap, alerts) == {"new": 0, "repeated": 1}          # not a new incident every 5 s
+    inc = st.host_incidents()
+    assert len(inc) == 1 and inc[0]["count"] == 2 and inc[0]["status"] == "open"
+    with pytest.raises(ValueError):
+        st.host_triage(inc[0]["id"], "BLOCKED", "analyst")                           # we never claim to block anything
+    st.host_triage(inc[0]["id"], "CONFIRMED", "analyst", "yes")
+    with pytest.raises(ValueError):
+        st.host_triage(inc[0]["id"], "FALSE_POSITIVE", "analyst")                    # a decision is final
+    assert st.verify_chain()["ok"] and st.host_status()[0]["open_incidents"] == 0
+
+
+def test_host_api_auth_flow_and_xss_safe_json(client):
+    snap = _snap(listening=[{"pid": 8, "proc": "<script>alert(1)</script>", "port": 4444}])
+    assert client.post("/api/host/telemetry", json=snap).status_code == 401
+    assert client.post("/api/host/telemetry", json=snap, headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.post("/api/host/telemetry", json={"nothing": 1}, headers={"X-API-Key": "k"}).status_code == 400
+    r = client.post("/api/host/telemetry", json=snap, headers={"X-API-Key": "k"})
+    assert r.status_code == 200 and r.json["new"] == 1
+    anon = client.application.test_client()                                          # fresh client: not logged in
+    assert anon.get("/api/host/incidents").status_code == 401                        # dashboard data needs a login
+    assert anon.get("/api/host/status").status_code == 401
+    client.post("/login", data={"username": "analyst", "password": "pw"})
+    H = {"X-Requested-With": "hitds"}
+    inc = client.get("/api/host/incidents").json["incidents"][0]
+    assert inc["plain"]["do"] and "does not block" in inc["plain"]["caveat"]
+    assert client.get("/api/host/status").json["hosts"][0]["host"] == "pc1"
+    assert client.post(f"/api/host/incident/{inc['id']}/triage", json={"decision": "CONFIRMED"}).status_code == 400  # CSRF header
+    assert client.post(f"/api/host/incident/{inc['id']}/triage", json={"decision": "BLOCKED"}, headers=H).status_code == 409
+    assert client.post(f"/api/host/incident/{inc['id']}/triage", json={"decision": "CONFIRMED"}, headers=H).json["status"] == "CONFIRMED"
+    assert client.post("/api/host/incident/99999/triage", json={"decision": "CONFIRMED"}, headers=H).status_code == 404
+    assert client.get("/api/audit").json["verify"]["ok"]
+
+
+def test_sensor_sees_a_real_reverse_shell_style_connection():
+    """End to end on this machine: a real listener and client on port 4444, read by the real sensor, flagged by the rules."""
+    import importlib.util, pathlib, socket
+    spec = importlib.util.spec_from_file_location("sensor_mod", pathlib.Path(__file__).parent.parent / "sensor" / "hitds_host_sensor.py")
+    sm = importlib.util.module_from_spec(spec); spec.loader.exec_module(sm)
+    from hitds import hostrules as hr
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("127.0.0.1", 4444))
+    except OSError:
+        pytest.skip("port 4444 is busy on this machine")
+    srv.listen(1)
+    cli = socket.create_connection(("127.0.0.1", 4444)); conn, _ = srv.accept()
+    try:
+        alerts = hr.evaluate(hr.clean_snapshot(sm.snapshot()))
+    finally:
+        cli.close(); conn.close(); srv.close()
+    kinds = {a["type"] for a in alerts}
+    assert "SUSPICIOUS_LISTENER" in kinds and "SUSPICIOUS_CONNECTION" in kinds

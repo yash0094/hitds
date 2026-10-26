@@ -62,6 +62,9 @@ class Streamer:
 def _users_from_env() -> dict[str, str]:
     raw = os.environ.get("HITDS_USERS", "").strip()
     if not raw:
+        if any(os.environ.get(k) for k in ("RENDER", "SPACE_ID", "HITDS_PRODUCTION")):
+            log.error("HITDS_USERS is not set on a public host: logins are DISABLED. Set HITDS_USERS=name:password.")
+            return {}  # never expose the demo login on a public URL
         log.warning("HITDS_USERS not set - using development login analyst / hitds-demo. Set it before deploying.")
         raw = "analyst:hitds-demo"
     users = {}
@@ -260,6 +263,46 @@ def create_app(dataset: str | None = None, reset: bool | None = None, rate: floa
         except ValueError as e:
             return jsonify({"error": str(e)}), 422
         return jsonify(report)
+
+    # ------------------------------------------------------------------ host sensor (sensor/hitds_host_sensor.py)
+    @app.post("/api/host/telemetry")
+    def host_telemetry():
+        """One snapshot from a host sensor: connections, listening ports, process names, CPU and memory."""
+        if not api_key or not secrets.compare_digest(request.headers.get("X-API-Key", ""), api_key):
+            return jsonify({"error": "invalid or missing X-API-Key (set HITDS_API_KEY on the server)"}), 401
+        from hitds import hostrules
+        try:
+            snap = hostrules.clean_snapshot(request.get_json(force=True, silent=True))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        alerts = hostrules.evaluate(snap)
+        res = store.add_host_snapshot(snap, alerts)
+        return jsonify({"ok": True, "alerts": len(alerts), **res})
+
+    @app.get("/api/host/status")
+    @login_required
+    def host_status():
+        return jsonify({"hosts": store.host_status()})
+
+    @app.get("/api/host/incidents")
+    @login_required
+    def host_incidents():
+        from hitds import hostrules
+        rows = store.host_incidents(int(request.args.get("limit", 30)))
+        for r in rows:
+            r["plain"] = hostrules.explain(r["type"], r["severity"], r["details"])
+        return jsonify({"incidents": rows})
+
+    @app.post("/api/host/incident/<int:iid>/triage")
+    @login_required
+    def host_triage(iid):
+        j = request.get_json(force=True, silent=True) or {}
+        try:
+            return jsonify(store.host_triage(iid, j.get("decision", ""), session["user"], str(j.get("note", ""))))
+        except KeyError:
+            return jsonify({"error": "not found"}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 409
 
     return app
 
