@@ -88,15 +88,29 @@ def evaluate(snap: dict) -> list[dict]:
     alerts = []
 
     for c in snap.get("established", []):
-        info = SUSPICIOUS_PORTS.get(c["rport"])
-        if info:
-            sev, why = info
-            local = c["raddr"].startswith(_LOOPBACK)
+        # Two different situations share this table: THIS machine reached OUT to a suspicious port (check
+        # rport, the normal reverse-shell-client case), or an INCOMING connection landed on a suspicious
+        # LOCAL port this machine is listening on (check lport - this is what a test from another laptop
+        # connecting TO your backdoor port produces, and it is the case that carries the attacker's address).
+        out_info = SUSPICIOUS_PORTS.get(c["rport"])
+        in_info = SUSPICIOUS_PORTS.get(c["lport"])
+        local = c["raddr"].startswith(_LOOPBACK)
+        if in_info:
+            sev, why = in_info
+            if local:
+                sev = "MEDIUM" if sev == "HIGH" else "LOW"
+            alerts.append({"type": "SUSPICIOUS_CONNECTION", "severity": sev,
+                           "key": f"in:{c['proc']}:{c['pid']}:{c['lport']}",
+                           "details": f"Something at {c['raddr']}:{c['rport']} connected IN to {c['proc'] or 'a process'} "
+                                      f"(PID {c['pid']}) on this machine's port {c['lport']}, {why}." +
+                                      (" The other end is this same machine, so this may be a local test." if local else "")})
+        elif out_info:
+            sev, why = out_info
             if local:  # same machine on both ends: usually a test, so lower it and say so
                 sev = "MEDIUM" if sev == "HIGH" else "LOW"
             alerts.append({"type": "SUSPICIOUS_CONNECTION", "severity": sev,
-                           "key": f"{c['proc']}:{c['pid']}:{c['rport']}",
-                           "details": f"{c['proc'] or 'a process'} (PID {c['pid']}) is connected to {c['raddr']}:{c['rport']}, "
+                           "key": f"out:{c['proc']}:{c['pid']}:{c['rport']}",
+                           "details": f"{c['proc'] or 'a process'} (PID {c['pid']}) is connected OUT to {c['raddr']}:{c['rport']}, "
                                       f"{why}." + (" The other end is this same machine, so this may be a local test." if local else "")})
 
     for p in snap.get("listening", []):

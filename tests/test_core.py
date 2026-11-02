@@ -310,6 +310,14 @@ def test_host_rules_flag_each_threat_and_stay_quiet_on_a_clean_host():
         total_connections=900, syn_sent=[{"raddr": f"10.0.0.{i}", "rport": 445} for i in range(25)])))
     types = sorted(x["type"] for x in a)
     assert types == ["OUTBOUND_SCAN", "RESTRICTED_TOOL", "SOCKET_FLOOD", "SUSPICIOUS_CONNECTION", "SUSPICIOUS_LISTENER"]
+
+    # incoming connection TO a suspicious local port (e.g. another laptop connecting to this machine's
+    # port 4444 backdoor) must be flagged too, and must show the attacker's real address
+    inbound = hr.evaluate(hr.clean_snapshot(_snap(
+        established=[{"pid": 7, "proc": "backdoor.exe", "laddr": "192.168.1.50", "lport": 4444,
+                      "raddr": "192.168.1.77", "rport": 54231}])))
+    assert inbound[0]["type"] == "SUSPICIOUS_CONNECTION" and inbound[0]["severity"] == "HIGH"
+    assert "192.168.1.77" in inbound[0]["details"] and "connected IN to" in inbound[0]["details"]
     assert [x for x in a if x["type"] == "RESTRICTED_TOOL"][0]["severity"] == "HIGH"     # de-duplicated by name
     assert len([x for x in a if x["type"] == "RESTRICTED_TOOL"]) == 1
     # same machine on both ends is usually a test: severity is lowered and the text says so
