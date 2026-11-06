@@ -14,18 +14,6 @@
     <span class="sub">Human-in-the-Loop Intrusion Detection · <b id="ds">{{ dataset }}</b> · model <b id="mv">v?</b>
       · policy <b id="pol">?</b> · <span class="mono">{{ user }}</span> <a href="/logout" class="muted">sign out</a></span>
   </div>
-  <div class="kpis">
-    <div class="kpi"><span id="k-events">0</span><label>events scored</label></div>
-    <div class="kpi"><span id="k-auto">0%</span><label>handled autonomously</label></div>
-    <div class="kpi"><span id="k-human">0%</span><label>sent to a human</label></div>
-    <div class="kpi"><span id="k-open">0</span><label>open in queue</label></div>
-    <div class="kpi"><span id="k-verdicts">0</span><label>verdicts</label></div>
-    <div class="kpi"><span id="k-ttd">0s</span><label>mean time to decide</label></div>
-    <div class="kpi"><span id="k-agree">n/a</span><label>agreement (blind / seen)</label></div>
-    <div class="kpi"><span id="k-kappa">n/a</span><label>inter-annotator κ</label></div>
-    <div class="kpi"><span id="k-auto-err">n/a</span><label>error on auto route</label></div>
-    <div class="kpi"><span id="k-lat">n/a</span><label>ms / event</label></div>
-  </div>
   <div class="controls">
     <button id="btn-stream" class="btn">Start traffic</button>
     <select id="rate" title="events per second">
@@ -46,15 +34,7 @@
     <div id="queue" class="list"><p class="empty">Queue empty. Start the traffic replay or upload flows.</p></div>
   </section>
 
-  <section class="panel detail" id="detail">
-    <div class="placeholder">
-      <h2>Select an alert</h2>
-      <p>Evidence is shown first and the model's verdict last, so you judge the traffic before seeing what the model thinks.</p>
-      <p class="kbd-help">Shortcuts: <kbd>J</kbd> next alert · <kbd>T</kbd> malicious · <kbd>F</kbd> benign · <kbd>U</kbd> needs info · <kbd>R</kbd> reveal · <kbd>Enter</kbd> submit</p>
-    </div>
-  </section>
-
-  <aside class="side">
+  <section class="side center-stage">
     <section class="panel">
       <h2>Feedback loop</h2>
       <div class="progress"><div id="fb-bar"></div></div>
@@ -80,6 +60,31 @@
       <h2>Audit trail <span id="chain" class="pill">…</span></h2>
       <div id="audit" class="list compact mono"></div>
       <a class="btn ghost small" href="/api/audit/export">Export audit log (JSON)</a>
+    </section>
+  </section>
+
+  <aside class="side-right">
+    <section class="panel kpi-strip">
+      <div class="kpis">
+        <div class="kpi"><span id="k-events">0</span><label>events scored</label></div>
+        <div class="kpi"><span id="k-auto">0%</span><label>handled autonomously</label></div>
+        <div class="kpi"><span id="k-human">0%</span><label>sent to a human</label></div>
+        <div class="kpi"><span id="k-open">0</span><label>open in queue</label></div>
+        <div class="kpi"><span id="k-verdicts">0</span><label>verdicts</label></div>
+        <div class="kpi"><span id="k-ttd">0s</span><label>mean time to decide</label></div>
+        <div class="kpi"><span id="k-agree">n/a</span><label>agreement (blind / seen)</label></div>
+        <div class="kpi"><span id="k-kappa">n/a</span><label>inter-annotator κ</label></div>
+        <div class="kpi"><span id="k-auto-err">n/a</span><label>error on auto route</label></div>
+        <div class="kpi"><span id="k-lat">n/a</span><label>ms / event</label></div>
+      </div>
+    </section>
+
+    <section class="panel detail" id="detail">
+      <div class="placeholder">
+        <h2>Select an alert</h2>
+        <p>Evidence is shown first and the model's verdict last, so you judge the traffic before seeing what the model thinks.</p>
+        <p class="kbd-help">Shortcuts: <kbd>J</kbd> next alert · <kbd>T</kbd> malicious · <kbd>F</kbd> benign · <kbd>U</kbd> needs info · <kbd>R</kbd> reveal · <kbd>Enter</kbd> submit</p>
+      </div>
     </section>
   </aside>
 </main>
