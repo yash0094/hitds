@@ -24,21 +24,23 @@ select, .btn { background: var(--panel-2); color: var(--text); border: 1px solid
 .btn.on { background: var(--escalate); border-color: var(--escalate); color: #fff; }
 .toggle { color: var(--muted); display: flex; gap: 6px; align-items: center; cursor: pointer; }
 
-.grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 360px; gap: 14px; padding: 14px; align-items: start; }
+.grid { display: grid; grid-template-columns: 330px minmax(0, 1fr) 380px; gap: 14px; padding: 14px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 80px; max-height: calc(100vh - 100px); overflow: auto; }
 .queue { position: sticky; top: 80px; max-height: calc(100vh - 100px); overflow: auto; }
 
-/* Center stage: the live system panels (feedback loop, host sensor, host risk, live feed, audit trail) take
-   the widest column so a demo audience sees them first. Two per row once there is room; a solo section such
-   as the audit trail is allowed to span both so its log list stays wide and readable. */
-.center-stage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-content: start; }
-.center-stage .panel { margin: 0; }
-.center-stage .list.compact { max-height: 320px; }
-.center-stage .panel:has(#audit) { grid-column: 1 / -1; }
-
-/* Right column: the KPI strip sits above the alert detail panel, in the narrower sidebar. */
-.side-right { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 80px; max-height: calc(100vh - 100px); overflow: auto; }
+/* Right column: the flow-pipeline KPIs and the compact flow-alert queue + detail/verdict widget. The widget
+   reuses the same evidence/SHAP/verdict markup as the primary detail panel, so the two-column .cols layout and
+   the SHAP bar grid are forced to stack in this narrower space rather than duplicating all those rules. */
 .kpi-strip .kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 14px; flex: none; }
+.flow-panel #fqueue { max-height: 220px; }
+.flow-detail { margin-top: 10px; }
+.flow-detail:empty::before { content: "Select a flow alert above to review it."; color: var(--muted); font-size: 13px; }
+.flow-detail .cols, .flow-detail .cols.sec { grid-template-columns: 1fr; gap: 10px; }
+.flow-detail .bars .bar { grid-template-columns: 110px 1fr 50px; }
+.flow-detail .dhead { font-size: 13px; }
+.flow-detail .dhead h3 { font-size: 16px; }
+.flow-detail .tbl { font-size: 11px; }
 .list { display: flex; flex-direction: column; gap: 6px; }
 .list.compact { gap: 3px; max-height: 240px; overflow: auto; }
 .list > * { flex-shrink: 0; }
@@ -93,17 +95,8 @@ kbd { font-family: var(--mono); border: 1px solid var(--border); border-bottom-w
 .progress div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--accent); padding: 10px 16px; border-radius: 8px; z-index: 10; }
 
-@media (max-width: 1250px) {
-  .grid { grid-template-columns: 290px minmax(0, 1fr); }
-  .side-right { grid-column: 1 / -1; position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
-  .side-right .kpi-strip { flex: 1 1 100%; } .side-right .detail { flex: 1 1 100%; }
-}
-@media (max-width: 800px) {
-  .grid { grid-template-columns: 1fr; }
-  .queue { position: static; max-height: 360px; }
-  .center-stage { grid-template-columns: 1fr; }
-  .cols { grid-template-columns: 1fr; }
-}
+@media (max-width: 1250px) { .grid { grid-template-columns: 290px minmax(0, 1fr); } .side { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); } }
+@media (max-width: 800px) { .grid { grid-template-columns: 1fr; } .queue { position: static; max-height: 360px; } .cols { grid-template-columns: 1fr; } }
 
 /* login */
 .login-body { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
@@ -117,5 +110,6 @@ a { color: var(--accent); }
 .sigbox { background: rgba(248, 81, 73, .08); border: 1px solid var(--escalate); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
 /* v0.2 header: KPIs on their own full-width row */
 .topbar .brand { flex: 1 1 auto; }
+.topbar .kpis { order: 3; flex: 1 1 100%; gap: 6px 22px; }
 .hostrow { grid-template-columns: 58px 1fr 84px; }
 .hostrow .pill { text-align: center; white-space: nowrap; }

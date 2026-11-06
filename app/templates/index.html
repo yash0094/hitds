@@ -22,49 +22,25 @@
     </select>
     <button id="btn-inject" class="btn ghost" title="push 30 replay events now">+30</button>
     <label class="btn ghost" title="Score a CICFlowMeter CSV or JSON of flows">Upload flows<input id="upload" type="file" accept=".csv,.json" hidden></label>
-    <label class="toggle" title="Hide the model's verdict until you have looked at the evidence (counters automation bias)">
-      <input type="checkbox" id="blind"> Blind review
-    </label>
   </div>
 </header>
 
 <main class="grid">
   <section class="panel queue">
-    <h2>Review queue <small id="qhint">triage priority + alert-policy score</small></h2>
-    <div id="queue" class="list"><p class="empty">Queue empty. Start the traffic replay or upload flows.</p></div>
+    <h2>Review queue <small id="host-line" class="muted">no sensor connected</small></h2>
+    <div id="hqueue" class="list"><p class="empty">Waiting for a sensor. Run <span class="mono">sensor/hitds_host_sensor.py</span> on a machine to see incidents here.</p></div>
   </section>
 
-  <section class="side center-stage">
-    <section class="panel">
-      <h2>Feedback loop</h2>
-      <div class="progress"><div id="fb-bar"></div></div>
-      <p class="muted"><span id="fb-count">0</span> / <span id="fb-every">50</span> new labels until the next retrain
-        <span id="retraining" class="pill warn hidden">retraining…</span></p>
-      <p id="retrain-msg" class="muted small"></p>
-      <button id="btn-retrain" class="btn ghost small">Retrain now</button>
-      <table class="tbl" id="history"><thead><tr><th>ver</th><th>labels</th><th>val F1</th><th>human share</th><th></th></tr></thead><tbody></tbody></table>
-    </section>
-    <section class="panel">
-      <h2>Host sensor <small>live machine checks · <span id="host-line" class="muted">no sensor connected</span></small></h2>
-      <div id="host-inc" class="list compact"><p class="empty">Run <span class="mono">sensor/hitds_host_sensor.py</span> on a machine to see it here.</p></div>
-    </section>
-    <section class="panel">
-      <h2>Host risk <small>HMM belief · log R · sequential test</small></h2>
-      <div id="hosts" class="list compact"></div>
-    </section>
-    <section class="panel">
-      <h2>Live feed</h2>
-      <div id="feed" class="list compact mono"></div>
-    </section>
-    <section class="panel">
-      <h2>Audit trail <span id="chain" class="pill">…</span></h2>
-      <div id="audit" class="list compact mono"></div>
-      <a class="btn ghost small" href="/api/audit/export">Export audit log (JSON)</a>
-    </section>
+  <section class="panel detail" id="detail">
+    <div class="placeholder">
+      <h2>Select an alert</h2>
+      <p>Pick an incident from the review queue on the left to see what the sensor found, why, and what it suggests. You decide whether it is a real threat or a false alarm.</p>
+    </div>
   </section>
 
-  <aside class="side-right">
+  <aside class="side">
     <section class="panel kpi-strip">
+      <h2>Flow pipeline stats <small>from Start traffic / Upload flows</small></h2>
       <div class="kpis">
         <div class="kpi"><span id="k-events">0</span><label>events scored</label></div>
         <div class="kpi"><span id="k-auto">0%</span><label>handled autonomously</label></div>
@@ -79,12 +55,36 @@
       </div>
     </section>
 
-    <section class="panel detail" id="detail">
-      <div class="placeholder">
-        <h2>Select an alert</h2>
-        <p>Evidence is shown first and the model's verdict last, so you judge the traffic before seeing what the model thinks.</p>
-        <p class="kbd-help">Shortcuts: <kbd>J</kbd> next alert · <kbd>T</kbd> malicious · <kbd>F</kbd> benign · <kbd>U</kbd> needs info · <kbd>R</kbd> reveal · <kbd>Enter</kbd> submit</p>
-      </div>
+    <section class="panel flow-panel">
+      <h2>Flow alerts <small id="fqhint">triage priority + alert-policy score</small></h2>
+      <label class="toggle" style="margin-bottom:8px" title="Hide the model's verdict until you have looked at the evidence (counters automation bias)">
+        <input type="checkbox" id="blind"> Blind review
+      </label>
+      <div id="fqueue" class="list compact"><p class="empty">Queue empty. Start the traffic replay or upload flows.</p></div>
+      <div id="fdetail" class="flow-detail"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Feedback loop</h2>
+      <div class="progress"><div id="fb-bar"></div></div>
+      <p class="muted"><span id="fb-count">0</span> / <span id="fb-every">50</span> new labels until the next retrain
+        <span id="retraining" class="pill warn hidden">retraining…</span></p>
+      <p id="retrain-msg" class="muted small"></p>
+      <button id="btn-retrain" class="btn ghost small">Retrain now</button>
+      <table class="tbl" id="history"><thead><tr><th>ver</th><th>labels</th><th>val F1</th><th>human share</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Host risk <small>HMM belief · log R · sequential test</small></h2>
+      <div id="hosts" class="list compact"></div>
+    </section>
+    <section class="panel">
+      <h2>Live feed</h2>
+      <div id="feed" class="list compact mono"></div>
+    </section>
+    <section class="panel">
+      <h2>Audit trail <span id="chain" class="pill">…</span></h2>
+      <div id="audit" class="list compact mono"></div>
+      <a class="btn ghost small" href="/api/audit/export">Export audit log (JSON)</a>
     </section>
   </aside>
 </main>

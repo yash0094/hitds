@@ -1,4 +1,10 @@
 // HITDS analyst console. Plain JS, no build step, no CDN (works offline on demo day).
+//
+// Two independent review systems share this page:
+//   - Host incidents (from sensor/hitds_host_sensor.py): the PRIMARY review queue (left) and detail (center).
+//     Click an incident -> see what/risk/do and the raw measurement, then Confirm threat or mark it a False alarm.
+//   - Flow alerts (from "Start traffic" replay or "Upload flows"): a compact queue + detail widget in the
+//     right-hand column, with the full evidence/SHAP/verdict workflow, unchanged in substance from before.
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pct = (x, d = 0) => (x == null ? "n/a" : (100 * x).toFixed(d) + "%");
@@ -12,39 +18,103 @@ async function api(url, opts = {}) {
 }
 const post = (url, body) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-const state = { current: null, openedAt: 0, verdict: null, revealed: false, queue: [], streaming: false };
+const state = { flowCurrent: null, openedAt: 0, verdict: null, revealed: false, flowQueue: [], streaming: false,
+                hostIncidents: [], hostCurrent: null };
 const STATES = ["safe", "intrusion", "exploit", "impact"];
+const SEV_CLASS = { CRITICAL: "bad", HIGH: "bad", MEDIUM: "warn", LOW: "ok" };
 
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.add("hidden"), 4000); }
 function stack(belief) {
   return `<div class="stack">${STATES.map((s) => `<div class="s-${s}" style="width:${(100 * (belief[s] || 0)).toFixed(1)}%" title="${s} ${pct(belief[s], 1)}"></div>`).join("")}</div>`;
 }
 
-// ------------------------------------------------------------------ queue
-async function loadQueue() {
+// ============================================================== PRIMARY: host-sensor incidents (left + center)
+async function loadHostQueue() {
+  const [st, inc] = await Promise.all([api("/api/host/status"), api("/api/host/incidents")]);
+  const h = st.hosts[0];
+  $("#host-line").textContent = h ? `${h.host} · CPU ${h.cpu.toFixed(0)}% · mem ${h.mem.toFixed(0)}% · ${h.conns} sockets · ${h.age_s < 30 ? "live" : "last seen " + Math.round(h.age_s) + "s ago"}` : "no sensor connected";
+  state.hostIncidents = inc.incidents;
+  $("#hqueue").innerHTML = inc.incidents.length ? inc.incidents.map((i) => `
+    <div class="qitem ${i.severity === "HIGH" || i.severity === "CRITICAL" ? "ESCALATE" : "REVIEW"} ${state.hostCurrent === i.id ? "active" : ""}" data-id="${i.id}">
+      <div class="row1"><span>#${i.id} · ${esc(i.host)}</span><span class="pill ${SEV_CLASS[i.severity] || "warn"}">${i.status === "open" ? i.severity : i.status}</span></div>
+      <div class="row2">${esc(i.plain.title)} ${i.count > 1 ? "· ×" + i.count : ""}</div>
+    </div>`).join("") : `<p class="empty">${h ? "No incidents. This host looks clean." : 'Waiting for a sensor. Run <span class="mono">sensor/hitds_host_sensor.py</span> on a machine to see incidents here.'}</p>`;
+  document.querySelectorAll("#hqueue .qitem").forEach((el) => (el.onclick = () => openHostAlert(+el.dataset.id)));
+  if (state.hostCurrent) {
+    const still = inc.incidents.find((i) => i.id === state.hostCurrent);
+    if (still) renderHostDetail(still); // keep an open detail in sync with status/count changes, without re-navigating
+  }
+}
+
+function renderHostDetail(i) {
+  const p = i.plain;
+  const act = i.status === "open"
+    ? `<div class="decide"><button class="btn" id="btn-confirm">Confirm threat</button><button class="btn ghost" id="btn-falsealarm">False alarm</button></div>`
+    : `<p><span class="pill ${i.status === "CONFIRMED" ? "bad" : "ok"}">${esc(i.status)}</span> decided by <b>${esc(i.decided_by)}</b>${i.note ? " — " + esc(i.note) : ""}</p>`;
+  $("#detail").innerHTML = `
+    <div class="dhead"><h3>${esc(p.title)}</h3><span class="pill ${SEV_CLASS[i.severity] || "warn"}">${esc(i.severity)}</span>
+      <span class="mono">${esc(i.host)}</span>
+      <span class="muted mono">seen ${i.count}× · first ${new Date(i.first_ts * 1000).toLocaleTimeString()} · last ${new Date(i.last_ts * 1000).toLocaleTimeString()}</span></div>
+    <p class="reason">${esc(i.details)}</p>
+    <div class="verdictbox">
+      <h2>What this means</h2>
+      <p>${esc(p.what)}</p>
+      <h2 style="margin-top:10px">Risk</h2>
+      <p>${esc(p.risk)}</p>
+      <h2 style="margin-top:10px">What to do</h2>
+      <ol>${p.do.map((d) => `<li>${esc(d)}</li>`).join("")}</ol>
+      <p class="muted small">${esc(p.caveat)}</p>
+      <h2 style="margin-top:14px">Your decision</h2>
+      ${act}
+    </div>`;
+  if (i.status === "open") {
+    $("#btn-confirm").onclick = () => hostTriage(i.id, "CONFIRMED");
+    $("#btn-falsealarm").onclick = () => hostTriage(i.id, "FALSE_POSITIVE");
+  }
+}
+
+function openHostAlert(id) {
+  const i = state.hostIncidents.find((x) => x.id === id);
+  if (!i) return;
+  state.hostCurrent = id;
+  renderHostDetail(i);
+  document.querySelectorAll("#hqueue .qitem").forEach((el) => el.classList.toggle("active", +el.dataset.id === id));
+}
+
+async function hostTriage(id, decision) {
+  try {
+    await post(`/api/host/incident/${id}/triage`, { decision });
+    toast("Decision recorded in the audit log");
+    await loadHostQueue();
+    if (state.hostCurrent === id) openHostAlert(id);
+    loadAudit();
+  } catch (e) { toast(e.message); }
+}
+
+// ============================================================== SECONDARY: flow alerts (right-hand widget)
+async function loadFlowQueue() {
   const q = await api("/api/queue");
-  state.queue = q.alerts;
-  $("#queue").innerHTML = q.alerts.length ? q.alerts.map((a) => `
-    <div class="qitem ${a.route} ${a.status} ${state.current === a.id ? "active" : ""}" data-id="${a.id}">
+  state.flowQueue = q.alerts;
+  $("#fqueue").innerHTML = q.alerts.length ? q.alerts.map((a) => `
+    <div class="qitem ${a.route} ${a.status} ${state.flowCurrent === a.id ? "active" : ""}" data-id="${a.id}">
       <div class="row1"><span>#${a.id} · ${esc(a.host)}</span><span class="pill ${a.status === "second_review" ? "second_review" : a.route}">${a.status === "second_review" ? "2ND REVIEW" : a.route}</span></div>
       <div class="row2">${esc(a.src_ip)} → ${esc(a.dst_ip)} · priority ${Number(a.final_priority).toFixed(2)}${a.source && a.source !== "replay" ? " · " + esc(a.source) : ""}</div>
     </div>`).join("") : `<p class="empty">Queue empty.${state.streaming ? " Waiting for uncertain events…" : " Start the traffic replay or upload flows."}</p>`;
-  document.querySelectorAll(".qitem").forEach((el) => (el.onclick = () => openAlert(+el.dataset.id)));
+  document.querySelectorAll("#fqueue .qitem").forEach((el) => (el.onclick = () => openFlowAlert(+el.dataset.id)));
   $("#hosts").innerHTML = q.hosts.map((h) => `
     <div class="hostrow"><b title="${esc(h.host)}">${esc(h.host).slice(-8)}</b>${stack(h.belief)}<span class="pill ${h.sprt === "compromised" ? "bad" : h.sprt === "safe" ? "ok" : "warn"}" title="${h.sprt === "compromised" ? "detected by the sequential test · " : ""}log R ${h.llr} · most likely ${h.stage}">${h.sprt === "compromised" ? "⚑ " + esc(h.hypothesis) : h.stage}</span></div>`).join("")
     + `<div class="legend">${STATES.map((s) => `<span><i class="s-${s}"></i>${s}</span>`).join("")}</div>`;
 }
 
-// ------------------------------------------------------------------ alert detail
-async function openAlert(id) {
+async function openFlowAlert(id) {
   const d = await api(`/api/alert/${id}`);
-  state.current = id; state.openedAt = Date.now(); state.verdict = null; state.revealed = !$("#blind").checked;
+  state.flowCurrent = id; state.openedAt = Date.now(); state.verdict = null; state.revealed = !$("#blind").checked;
   const a = d.alert;
   const maxAbs = Math.max(...d.attribution.map((x) => Math.abs(x.contribution)), 1e-9);
   const topClass = (p) => Object.entries(p).sort((x, y) => y[1] - x[1])[0];
   const prior = d.prior_verdicts.length ? `<div class="sigbox" style="border-color:var(--info);background:transparent">
       <b>Second review requested.</b> ${d.prior_verdicts.map((v) => `${esc(v.analyst)} said <b>${esc(v.corrected_label || v.verdict)}</b> (confidence ${v.analyst_confidence})`).join("; ")}. Your verdict is final.</div>` : "";
-  $("#detail").innerHTML = `
+  $("#fdetail").innerHTML = `
     <div class="dhead"><h3>Alert #${a.id}</h3><span class="pill ${a.route}">${a.route}</span>
       <span class="mono">${esc(a.src_ip)} → ${esc(a.dst_ip)} (${esc(a.host)})</span>
       <span class="muted mono">${esc(a.source)} · model v${a.model_version} · ${new Date(a.ts * 1000).toLocaleTimeString()}</span></div>
@@ -96,41 +166,41 @@ async function openAlert(id) {
       <button id="btn-submit" class="btn primary" disabled>Submit verdict (Enter)</button>
     </div>`;
   $("#btn-reveal").onclick = reveal;
-  document.querySelectorAll(".decide button").forEach((b) => (b.onclick = () => choose(b.dataset.v)));
-  $("#btn-submit").onclick = submit;
-  $("#detail").dataset.action = d.suggested_action || "";
-  loadQueue();
+  document.querySelectorAll("#fdetail .decide button").forEach((b) => (b.onclick = () => choose(b.dataset.v)));
+  $("#btn-submit").onclick = submitFlowVerdict;
+  $("#fdetail").dataset.action = d.suggested_action || "";
+  loadFlowQueue();
 }
 
 function reveal() { state.revealed = true; $("#modelview")?.classList.remove("hidden"); $("#btn-reveal")?.classList.add("hidden"); }
 
 function choose(v) {
   state.verdict = v;
-  document.querySelectorAll(".decide button").forEach((b) => (b.className = "btn" + (b.dataset.v === v ? " sel-" + v : "")));
+  document.querySelectorAll("#fdetail .decide button").forEach((b) => (b.className = "btn" + (b.dataset.v === v ? " sel-" + v : "")));
   if (v === "FP") $("#label").value = "BENIGN";
   $("#actwrap").style.opacity = v === "TP" ? 1 : 0.4;
   $("#btn-submit").disabled = false;
 }
 
-async function submit() {
-  if (!state.current || !state.verdict) return;
+async function submitFlowVerdict() {
+  if (!state.flowCurrent || !state.verdict) return;
   const body = { verdict: state.verdict, label: state.verdict === "UNKNOWN" ? null : $("#label").value,
     confidence: +$("#conf").value, seconds: (Date.now() - state.openedAt) / 1000, revealed: state.revealed,
-    action: state.verdict === "TP" && $("#act").checked ? $("#detail").dataset.action : null };
+    action: state.verdict === "TP" && $("#act").checked ? $("#fdetail").dataset.action : null };
   try {
-    const r = await post(`/api/alert/${state.current}/verdict`, body);
+    const r = await post(`/api/alert/${state.flowCurrent}/verdict`, body);
     const msg = r.status === "second_review" ? "sent for a second review" : r.status === "needs_info" ? "parked as needs-info" : "saved to the audit log";
-    toast(`Alert #${state.current}: ${state.verdict} ${msg}${r.retrain_started ? " - retraining started" : ""}`);
-    nextAlert();
+    toast(`Alert #${state.flowCurrent}: ${state.verdict} ${msg}${r.retrain_started ? " - retraining started" : ""}`);
+    nextFlowAlert();
   } catch (e) { toast("Error: " + e.message); }
 }
 
-function nextAlert() {
-  state.current = null;
-  loadQueue().then(() => { if (state.queue.length) openAlert(state.queue[0].id); else $("#detail").innerHTML = `<div class="placeholder"><h2>Queue clear</h2></div>`; });
+function nextFlowAlert() {
+  state.flowCurrent = null;
+  loadFlowQueue().then(() => { if (state.flowQueue.length) openFlowAlert(state.flowQueue[0].id); else $("#fdetail").innerHTML = `<p class="empty">Queue clear.</p>`; });
 }
 
-// ------------------------------------------------------------------ side panels
+// ============================================================== shared side panels
 async function loadMetrics() {
   const m = await api("/api/metrics");
   const auto = m.total_events ? (m.by_route.AUTO || 0) / m.total_events : 0;
@@ -189,42 +259,15 @@ $("#upload").onchange = async (e) => {
 };
 document.addEventListener("keydown", (e) => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  if (!state.flowCurrent) return; // shortcuts only act on an open flow alert; host incidents are click-driven
   const k = e.key.toLowerCase();
-  if (k === "j" && state.queue.length) openAlert(state.queue[0].id);
-  if (!state.current) return;
   if (k === "t") choose("TP"); if (k === "f") choose("FP"); if (k === "u") choose("UNKNOWN");
   if (k === "r") reveal();
-  if (e.key === "Enter") submit();
+  if (e.key === "Enter") submitFlowVerdict();
 });
 
-
-// ------------------------------------------------------------------ host sensor
-async function loadHost() {
-  const [st, inc] = await Promise.all([api("/api/host/status"), api("/api/host/incidents")]);
-  const h = st.hosts[0];
-  $("#host-line").textContent = h ? `${h.host} · CPU ${h.cpu.toFixed(0)}% · mem ${h.mem.toFixed(0)}% · ${h.conns} sockets · ${h.age_s < 30 ? "live" : "last seen " + Math.round(h.age_s) + "s ago"}` : "no sensor connected";
-  const sevClass = { CRITICAL: "bad", HIGH: "bad", MEDIUM: "warn", LOW: "ok" };
-  if (!inc.incidents.length) { $("#host-inc").innerHTML = h ? '<p class="empty">No incidents. This host looks clean.</p>' : $("#host-inc").innerHTML; return; }
-  const open = new Set([...document.querySelectorAll("#host-inc details[open]")].map((d) => d.dataset.id));
-  $("#host-inc").innerHTML = inc.incidents.map((i) => {
-    const p = i.plain;
-    const act = i.status === "open"
-      ? `<button class="btn small" onclick="hostTriage(${i.id},'CONFIRMED')">Confirm threat</button> <button class="btn ghost small" onclick="hostTriage(${i.id},'FALSE_POSITIVE')">False alarm</button>`
-      : `<span class="pill ${i.status === "CONFIRMED" ? "bad" : "ok"}">${esc(i.status)}</span> <span class="muted small">${esc(i.decided_by)}</span>`;
-    return `<details data-id="${i.id}" ${open.has(String(i.id)) ? "open" : ""} class="feedrow" style="display:block">
-      <summary><span class="pill ${sevClass[i.severity] || "warn"}">${esc(i.severity)}</span> <b>${esc(p.title)}</b> <span class="muted small">×${i.count} · ${esc(i.host)}</span></summary>
-      <p class="small">${esc(i.details)}</p><p class="small"><b>What:</b> ${esc(p.what)}<br><b>Risk:</b> ${esc(p.risk)}</p>
-      <ol class="small">${p.do.map((d) => `<li>${esc(d)}</li>`).join("")}</ol>
-      <p class="muted small">${esc(p.caveat)}</p><p>${act}</p></details>`;
-  }).join("");
-}
-async function hostTriage(id, decision) {
-  try { await post(`/api/host/incident/${id}/triage`, { decision }); toast("Decision recorded in the audit log"); loadHost(); loadAudit(); }
-  catch (e) { toast(e.message); }
-}
-
-function refresh() { loadQueue().catch(() => {}); loadMetrics().catch(() => {}); loadFeed().catch(() => {}); }
-refresh(); loadAudit().catch(() => {}); loadHost().catch(() => {});
+function refresh() { loadFlowQueue().catch(() => {}); loadMetrics().catch(() => {}); loadFeed().catch(() => {}); }
+refresh(); loadAudit().catch(() => {}); loadHostQueue().catch(() => {});
 setInterval(refresh, 1500);
 setInterval(() => loadAudit().catch(() => {}), 4000);
-setInterval(() => loadHost().catch(() => {}), 3000);
+setInterval(() => loadHostQueue().catch(() => {}), 3000);
